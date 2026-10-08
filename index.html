@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>3D Character Lab</title>
 
 <style>
@@ -13,96 +13,80 @@ body {
   background: #10141d;
   color: white;
   font-family: Arial, sans-serif;
-  overflow: hidden;
-}
-
-header {
-  padding: 16px;
   text-align: center;
 }
+
+h2 { margin: 18px 0 8px; }
 
 #status {
   color: #72f1c4;
   font-size: 14px;
-  padding: 8px;
+  padding: 10px;
 }
 
 #viewer {
-  width: 100%;
-  height: 72vh;
   display: block;
+  width: 100%;
+  height: 65vh;
+  touch-action: none;
+}
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px;
 }
 
 button {
-  padding: 12px 18px;
-  margin: 5px;
   border: 0;
   border-radius: 10px;
+  padding: 12px 16px;
   background: #72f1c4;
   color: #10141d;
   font-weight: bold;
 }
 
-.controls {
-  text-align: center;
-}
+button:active { transform: scale(.96); }
 </style>
 </head>
 
 <body>
-<header>
-  <h2>3D Character Lab</h2>
-  <div id="status">Loading 3D engine...</div>
-</header>
+<h2>3D Character Lab</h2>
+<div id="status">Starting 3D engine...</div>
 
 <canvas id="viewer"></canvas>
 
 <div class="controls">
+  <button onclick="playAnimation('Idle')">Idle</button>
+  <button onclick="playAnimation('Walking')">Walk</button>
+  <button onclick="playAnimation('Running')">Run</button>
+  <button onclick="playAnimation('Jump')">Jump</button>
   <button onclick="resetView()">Reset View</button>
-  <button onclick="toggleAnimation()">Pause / Play</button>
 </div>
 
-<script>
-function showError(message) {
-  document.getElementById("status").textContent = message;
-}
-</script>
-
-<script
-  src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"
-  onerror="showError('ERROR: Three.js library failed to load')">
-</script>
-
-<script
-  src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"
-  onerror="showError('ERROR: OrbitControls failed to load')">
-</script>
-
-<script
-  src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"
-  onerror="showError('ERROR: GLTFLoader failed to load')">
-</script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
 
 <script>
 let scene, camera, renderer, controls;
-let character = null;
 let mixer = null;
-let clock = null;
-let animationPlaying = true;
+let model = null;
+let actions = {};
+let activeAction = null;
+let clock;
+let jumpAction = null;
+
+const status = document.getElementById("status");
+const canvas = document.getElementById("viewer");
 
 function startApp() {
-  if (!window.THREE) {
-    showError("ERROR: Three.js is not available. Check internet.");
-    return;
-  }
-
-  if (!THREE.GLTFLoader || !THREE.OrbitControls) {
-    showError("ERROR: 3D components failed to load. Refresh page.");
-    return;
-  }
-
   try {
-    const canvas = document.getElementById("viewer");
+    if (!window.THREE) {
+      throw new Error("Three.js failed to load. Check internet.");
+    }
 
     scene = new THREE.Scene();
     scene.background = new THREE.Color(0x10141d);
@@ -111,16 +95,14 @@ function startApp() {
       45,
       canvas.clientWidth / canvas.clientHeight,
       0.1,
-      1000
+      100
     );
 
-    camera.position.set(0, 1.5, 5);
-    camera.lookAt(0, 1, 0);
+    camera.position.set(0, 1.5, 4.5);
 
     renderer = new THREE.WebGLRenderer({
       canvas: canvas,
-      antialias: true,
-      alpha: false
+      antialias: true
     });
 
     renderer.setPixelRatio(
@@ -139,7 +121,7 @@ function startApp() {
       renderer.domElement
     );
 
-    controls.target.set(0, 1, 0);
+    controls.target.set(0, 0.9, 0);
     controls.enableDamping = true;
     controls.update();
 
@@ -150,6 +132,7 @@ function startApp() {
     const light = new THREE.DirectionalLight(
       0xffffff, 2
     );
+
     light.position.set(4, 7, 5);
     scene.add(light);
 
@@ -157,7 +140,7 @@ function startApp() {
       new THREE.PlaneGeometry(100, 100),
       new THREE.MeshStandardMaterial({
         color: 0x202838,
-        roughness: 0.85
+        roughness: 0.9
       })
     );
 
@@ -167,70 +150,70 @@ function startApp() {
 
     clock = new THREE.Clock();
 
-    showError("3D engine ready. Loading character...");
+    if (!THREE.GLTFLoader) {
+      throw new Error("GLTFLoader failed to load.");
+    }
+
+    status.textContent = "Loading animated character...";
 
     const loader = new THREE.GLTFLoader();
 
     loader.load(
-      "./character.glb",
+      "https://threejs.org/examples/models/gltf/RobotExpressive/RobotExpressive.glb",
 
       function(gltf) {
-        character = gltf.scene;
+        model = gltf.scene;
+        scene.add(model);
 
-        const box = new THREE.Box3().setFromObject(character);
-        const size = box.getSize(new THREE.Vector3());
-        const center = box.getCenter(new THREE.Vector3());
+        mixer = new THREE.AnimationMixer(model);
 
-        if (size.y > 0) {
-          character.scale.setScalar(2.2 / size.y);
+        gltf.animations.forEach(function(clip) {
+          actions[clip.name] = mixer.clipAction(clip);
+        });
+
+        jumpAction = actions["Jump"];
+
+        if (!actions["Idle"]) {
+          status.textContent =
+            "Model loaded, but Idle animation is missing.";
+          return;
         }
 
-        character.position.x -= center.x *
-          (2.2 / (size.y || 1));
-        character.position.z -= center.z *
-          (2.2 / (size.y || 1));
+        mixer.addEventListener("finished", function(event) {
+          if (event.action === jumpAction) {
+            playAnimation("Idle");
+          }
+        });
 
-        const newBox = new THREE.Box3().setFromObject(character);
-        character.position.y -= newBox.min.y;
+        playAnimation("Idle");
 
-        scene.add(character);
+        status.textContent =
+          "SUCCESS: Animated character loaded!";
 
-        if (gltf.animations.length > 0) {
-          mixer = new THREE.AnimationMixer(character);
-          gltf.animations.forEach(function(clip) {
-            mixer.clipAction(clip).play();
-          });
-          showError("SUCCESS: Model loaded with animation!");
-        } else {
-          showError("SUCCESS: Model loaded. No animation found.");
-        }
       },
 
       function(progress) {
         if (progress.total > 0) {
-          const percent = Math.round(
-            progress.loaded / progress.total * 100
-          );
-          showError("Loading character: " + percent + "%");
+          status.textContent =
+            "Loading: " +
+            Math.round(progress.loaded / progress.total * 100) +
+            "%";
         }
       },
 
       function(error) {
-        showError(
-          "ERROR: Could not load character.glb. Check filename and folder."
-        );
         console.error(error);
+        status.textContent =
+          "ERROR: Model download failed. Check internet.";
       }
     );
 
     function animate() {
       requestAnimationFrame(animate);
 
-      if (mixer && animationPlaying) {
-        mixer.update(clock.getDelta());
-      } else {
-        clock.getDelta();
-      }
+      const delta = clock.getDelta();
+
+      if (mixer) mixer.update(delta);
 
       controls.update();
       renderer.render(scene, camera);
@@ -239,35 +222,73 @@ function startApp() {
     animate();
 
     window.addEventListener("resize", function() {
-      const width = canvas.clientWidth;
-      const height = canvas.clientHeight;
+      camera.aspect =
+        canvas.clientWidth / canvas.clientHeight;
 
-      camera.aspect = width / height;
       camera.updateProjectionMatrix();
-      renderer.setSize(width, height);
+
+      renderer.setSize(
+        canvas.clientWidth,
+        canvas.clientHeight
+      );
     });
 
   } catch (error) {
-    showError("ERROR: " + error.message);
+    status.textContent = "ERROR: " + error.message;
     console.error(error);
   }
+}
+
+function playAnimation(name) {
+  if (!mixer || !actions[name]) {
+    if (mixer) {
+      status.textContent =
+        "Animation not found: " + name;
+    }
+    return;
+  }
+
+  const nextAction = actions[name];
+
+  if (activeAction === nextAction) {
+    if (name === "Jump") {
+      nextAction.reset().play();
+    }
+    return;
+  }
+
+  if (activeAction) {
+    activeAction.fadeOut(0.2);
+  }
+
+  nextAction.reset();
+  nextAction.enabled = true;
+  nextAction.setEffectiveTimeScale(1);
+  nextAction.setEffectiveWeight(1);
+
+  if (name === "Jump") {
+    nextAction.setLoop(THREE.LoopOnce, 1);
+    nextAction.clampWhenFinished = true;
+  } else {
+    nextAction.setLoop(THREE.LoopRepeat, Infinity);
+    nextAction.clampWhenFinished = false;
+  }
+
+  nextAction.fadeIn(0.2).play();
+  activeAction = nextAction;
+
+  status.textContent = "Playing: " + name;
 }
 
 function resetView() {
   if (!camera || !controls) return;
 
-  camera.position.set(0, 1.5, 5);
-  controls.target.set(0, 1, 0);
+  camera.position.set(0, 1.5, 4.5);
+  controls.target.set(0, 0.9, 0);
   controls.update();
 }
 
-function toggleAnimation() {
-  animationPlaying = !animationPlaying;
-}
-
-window.addEventListener("load", function() {
-  setTimeout(startApp, 300);
-});
+window.addEventListener("load", startApp);
 </script>
 </body>
 </html>
