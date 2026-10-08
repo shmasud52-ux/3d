@@ -2,59 +2,55 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>3D Character Lab</title>
-
 <style>
 * { box-sizing: border-box; }
-
+html, body { margin: 0; min-height: 100%; }
 body {
-  margin: 0;
   background: #10141d;
-  color: white;
+  color: #fff;
   font-family: Arial, sans-serif;
   text-align: center;
+  overflow-x: hidden;
 }
-
-h2 { margin: 18px 0 8px; }
-
-#status {
-  color: #72f1c4;
-  font-size: 14px;
-  padding: 10px;
-}
-
+header { padding: 14px 12px 4px; }
+h2 { margin: 4px 0 8px; font-size: 22px; }
+#status { min-height: 20px; color: #72f1c4; font-size: 13px; padding: 5px 8px 10px; }
 #viewer {
   display: block;
   width: 100%;
-  height: 65vh;
+  height: 68vh;
+  min-height: 320px;
   touch-action: none;
+  outline: none;
 }
-
 .controls {
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
   gap: 8px;
-  padding: 12px;
+  padding: 12px 10px 20px;
 }
-
 button {
   border: 0;
   border-radius: 10px;
   padding: 12px 16px;
   background: #72f1c4;
   color: #10141d;
-  font-weight: bold;
+  font-weight: 700;
+  font-size: 14px;
+  cursor: pointer;
 }
-
-button:active { transform: scale(.96); }
+button:active { transform: scale(.97); }
+.note { color: #b7c0d0; font-size: 12px; padding: 0 14px 18px; }
 </style>
 </head>
-
 <body>
-<h2>3D Character Lab</h2>
-<div id="status">Starting 3D engine...</div>
+<header>
+  <h2>3D Character Lab</h2>
+  <div id="status">Starting 3D engine...</div>
+</header>
 
 <canvas id="viewer"></canvas>
 
@@ -65,201 +61,186 @@ button:active { transform: scale(.96); }
   <button onclick="playAnimation('Jump')">Jump</button>
   <button onclick="resetView()">Reset View</button>
 </div>
+<div class="note">Drag to rotate • Pinch or scroll to zoom</div>
 
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
-
 <script>
-let scene, camera, renderer, controls;
-let mixer = null;
-let model = null;
-let actions = {};
+let scene, camera, renderer, controls, mixer, model;
 let activeAction = null;
+let actions = {};
 let clock;
-let jumpAction = null;
+let defaultCameraPosition = null;
+let defaultTarget = null;
 
-const status = document.getElementById("status");
 const canvas = document.getElementById("viewer");
+const status = document.getElementById("status");
+function setStatus(message) { status.textContent = message; }
+
+function fitCameraToModel(object) {
+  // Calculate the real model bounds so the whole character fits in view.
+  const bounds = new THREE.Box3().setFromObject(object);
+  const size = bounds.getSize(new THREE.Vector3());
+  const center = bounds.getCenter(new THREE.Vector3());
+  const maxDim = Math.max(size.x, size.y, size.z);
+
+  if (!Number.isFinite(maxDim) || maxDim <= 0) {
+    camera.position.set(0, 1.5, 5);
+    controls.target.set(0, 1, 0);
+    controls.update();
+    return;
+  }
+
+  // Keep the model centered and place the camera far enough away.
+  const fov = THREE.MathUtils.degToRad(camera.fov);
+  let distance = (maxDim / 2) / Math.tan(fov / 2);
+  distance *= 1.55; // extra space around head, hands and feet
+
+  controls.target.copy(center);
+  camera.position.set(
+    center.x + distance * 0.12,
+    center.y + size.y * 0.08,
+    center.z + distance
+  );
+
+  camera.near = Math.max(0.01, distance / 100);
+  camera.far = Math.max(100, distance * 100);
+  camera.updateProjectionMatrix();
+  camera.lookAt(center);
+  controls.minDistance = Math.max(0.5, distance * 0.35);
+  controls.maxDistance = distance * 4;
+  controls.update();
+
+  defaultCameraPosition = camera.position.clone();
+  defaultTarget = center.clone();
+}
 
 function startApp() {
   try {
-    if (!window.THREE) {
-      throw new Error("Three.js failed to load. Check internet.");
+    if (!window.THREE) throw new Error("Three.js failed to load. Check internet.");
+    if (!THREE.GLTFLoader || !THREE.OrbitControls) {
+      throw new Error("3D components failed to load. Refresh the page.");
     }
 
     scene = new THREE.Scene();
     scene.background = new THREE.Color(0x10141d);
 
     camera = new THREE.PerspectiveCamera(
-      45,
-      canvas.clientWidth / canvas.clientHeight,
-      0.1,
-      100
+      42, canvas.clientWidth / canvas.clientHeight, 0.01, 1000
     );
-
-    camera.position.set(0, 1.5, 4.5);
+    camera.position.set(0, 1.5, 5);
 
     renderer = new THREE.WebGLRenderer({
-      canvas: canvas,
-      antialias: true
+      canvas: canvas, antialias: true, alpha: false
     });
-
-    renderer.setPixelRatio(
-      Math.min(window.devicePixelRatio, 2)
-    );
-
-    renderer.setSize(
-      canvas.clientWidth,
-      canvas.clientHeight
-    );
-
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    renderer.setSize(canvas.clientWidth, canvas.clientHeight);
     renderer.outputEncoding = THREE.sRGBEncoding;
 
-    controls = new THREE.OrbitControls(
-      camera,
-      renderer.domElement
-    );
-
-    controls.target.set(0, 0.9, 0);
+    controls = new THREE.OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
-    controls.update();
+    controls.dampingFactor = 0.06;
+    controls.screenSpacePanning = true;
 
-    scene.add(new THREE.HemisphereLight(
-      0xffffff, 0x444455, 2
-    ));
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x45465a, 2));
 
-    const light = new THREE.DirectionalLight(
-      0xffffff, 2
-    );
+    const keyLight = new THREE.DirectionalLight(0xffffff, 2.2);
+    keyLight.position.set(4, 8, 6);
+    scene.add(keyLight);
 
-    light.position.set(4, 7, 5);
-    scene.add(light);
+    const fillLight = new THREE.DirectionalLight(0x91baff, 0.8);
+    fillLight.position.set(-5, 3, -4);
+    scene.add(fillLight);
 
+    const floorMaterial = new THREE.MeshStandardMaterial({
+      color: 0x202838, roughness: 0.9
+    });
     const floor = new THREE.Mesh(
-      new THREE.PlaneGeometry(100, 100),
-      new THREE.MeshStandardMaterial({
-        color: 0x202838,
-        roughness: 0.9
-      })
+      new THREE.PlaneGeometry(200, 200), floorMaterial
     );
-
     floor.rotation.x = -Math.PI / 2;
-    floor.position.y = -0.02;
+    floor.position.y = -0.03;
     scene.add(floor);
 
     clock = new THREE.Clock();
-
-    if (!THREE.GLTFLoader) {
-      throw new Error("GLTFLoader failed to load.");
-    }
-
-    status.textContent = "Loading animated character...";
+    setStatus("Loading animated character...");
 
     const loader = new THREE.GLTFLoader();
-
+    // This sample GLB includes Idle, Walking, Running, and Jump animations.
     loader.load(
       "https://threejs.org/examples/models/gltf/RobotExpressive/RobotExpressive.glb",
-
       function(gltf) {
         model = gltf.scene;
         scene.add(model);
 
-        mixer = new THREE.AnimationMixer(model);
+        // Put the model's feet at floor level.
+        let bounds = new THREE.Box3().setFromObject(model);
+        model.position.y -= bounds.min.y;
+        bounds = new THREE.Box3().setFromObject(model);
 
+        mixer = new THREE.AnimationMixer(model);
+        actions = {};
         gltf.animations.forEach(function(clip) {
           actions[clip.name] = mixer.clipAction(clip);
         });
 
-        jumpAction = actions["Jump"];
-
-        if (!actions["Idle"]) {
-          status.textContent =
-            "Model loaded, but Idle animation is missing.";
-          return;
-        }
-
-        mixer.addEventListener("finished", function(event) {
-          if (event.action === jumpAction) {
-            playAnimation("Idle");
-          }
-        });
-
+        fitCameraToModel(model);
         playAnimation("Idle");
 
-        status.textContent =
-          "SUCCESS: Animated character loaded!";
-
+        const found = Object.keys(actions).join(", ");
+        setStatus("SUCCESS: Character loaded. Animations: " + (found || "none"));
       },
-
       function(progress) {
         if (progress.total > 0) {
-          status.textContent =
-            "Loading: " +
-            Math.round(progress.loaded / progress.total * 100) +
-            "%";
+          setStatus("Loading character: " +
+            Math.round(progress.loaded / progress.total * 100) + "%");
         }
       },
-
       function(error) {
         console.error(error);
-        status.textContent =
-          "ERROR: Model download failed. Check internet.";
+        setStatus("ERROR: Character download failed. Check internet and refresh.");
       }
     );
 
     function animate() {
       requestAnimationFrame(animate);
-
       const delta = clock.getDelta();
-
       if (mixer) mixer.update(delta);
-
       controls.update();
       renderer.render(scene, camera);
     }
-
     animate();
 
     window.addEventListener("resize", function() {
-      camera.aspect =
-        canvas.clientWidth / canvas.clientHeight;
-
+      const width = Math.max(1, canvas.clientWidth);
+      const height = Math.max(1, canvas.clientHeight);
+      camera.aspect = width / height;
       camera.updateProjectionMatrix();
-
-      renderer.setSize(
-        canvas.clientWidth,
-        canvas.clientHeight
-      );
+      renderer.setSize(width, height);
+      if (model) fitCameraToModel(model);
     });
-
   } catch (error) {
-    status.textContent = "ERROR: " + error.message;
     console.error(error);
+    setStatus("ERROR: " + error.message);
   }
 }
 
 function playAnimation(name) {
-  if (!mixer || !actions[name]) {
-    if (mixer) {
-      status.textContent =
-        "Animation not found: " + name;
-    }
+  if (!mixer) {
+    setStatus("Please wait: character is loading...");
+    return;
+  }
+  if (!actions[name]) {
+    setStatus("Animation not found: " + name +
+      ". Available: " + Object.keys(actions).join(", "));
     return;
   }
 
   const nextAction = actions[name];
+  if (activeAction === nextAction && name !== "Jump") return;
 
-  if (activeAction === nextAction) {
-    if (name === "Jump") {
-      nextAction.reset().play();
-    }
-    return;
-  }
-
-  if (activeAction) {
-    activeAction.fadeOut(0.2);
-  }
+  if (activeAction) activeAction.fadeOut(0.2);
 
   nextAction.reset();
   nextAction.enabled = true;
@@ -276,16 +257,27 @@ function playAnimation(name) {
 
   nextAction.fadeIn(0.2).play();
   activeAction = nextAction;
+  setStatus("Playing: " + name);
 
-  status.textContent = "Playing: " + name;
+  if (name === "Jump") {
+    mixer.addEventListener("finished", function onFinished(event) {
+      if (event.action === nextAction) {
+        mixer.removeEventListener("finished", onFinished);
+        playAnimation("Idle");
+      }
+    });
+  }
 }
 
 function resetView() {
   if (!camera || !controls) return;
-
-  camera.position.set(0, 1.5, 4.5);
-  controls.target.set(0, 0.9, 0);
-  controls.update();
+  if (model) {
+    fitCameraToModel(model);
+  } else {
+    camera.position.set(0, 1.5, 5);
+    controls.target.set(0, 1, 0);
+    controls.update();
+  }
 }
 
 window.addEventListener("load", startApp);
